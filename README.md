@@ -21,3 +21,12 @@ Non-Goals:
 ## How it works
 
 This tool parses the DOCX xml and will explicitly search for either placeholders or ContentControl type fields. These will be replaced with the replacement text.
+
+## Further reading
+
+The Office Open XML format has been published as an ISO standard, while normally
+these cost an arm and a leg, they have gracefully decided for our relevant
+standard to be [publicly available](https://standards.iso.org/ittf/PubliclyAvailableStandards/index.html).
+
+The XML format itself is published as ISO/IEC 29500-1:2016. Our package aims to
+be fully conformant with
