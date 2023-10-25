@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 use std::fs;
-use std::io::Cursor;
 use std::io::prelude::*;
 use std::io::BufReader;
+use std::io::Cursor;
 
-use quick_xml::Writer;
 use quick_xml::events::Event;
 use quick_xml::name::QName;
+use quick_xml::Writer;
 use zip::write::FileOptions;
 
 use quick_xml::reader::Reader;
@@ -85,7 +85,7 @@ impl ContentControlType {
             "w:comboBox" => Some(ContentControlType::ComboBox),
             "w:dropDownList" => Some(ContentControlType::DropdownList),
             "w:date" => Some(ContentControlType::Date),
-            _ => None
+            _ => None,
         }
     }
 }
@@ -99,7 +99,12 @@ struct ContentControl {
 
 impl ContentControl {
     fn new() -> ContentControl {
-        ContentControl { tag: "".into(), value: "".into(), ct_type: ContentControlType::Unsupported, params: HashMap::new() }
+        ContentControl {
+            tag: "".into(),
+            value: "".into(),
+            ct_type: ContentControlType::Unsupported,
+            params: HashMap::new(),
+        }
     }
     fn infer_from_params(&mut self) {
         // if no type is set, RichText is default
@@ -117,12 +122,12 @@ impl ContentControl {
 
 fn get_content_controls(data: &ZipData) -> Vec<ContentControl> {
     let mut controls: Vec<ContentControl> = Vec::new();
-    for (name, string) in data {
+    for (_, string) in data {
         if has_content_control(&string) {
             let mut reader = Reader::from_str(string);
-            let mut inPr = false;
-            let mut inContent = false;
-            let mut isControl = false;
+            let mut in_pr = false;
+            let mut in_content = false;
+            let mut in_t = false;
             let mut control = ContentControl::new();
             loop {
                 let ev = reader.read_event();
@@ -136,42 +141,58 @@ fn get_content_controls(data: &ZipData) -> Vec<ContentControl> {
                             }
                         }
                         QName(b"w:sdtPr") => {
-                            inPr = true;
+                            in_pr = true;
                         }
                         QName(b"w:sdtContent") => {
-                            inContent = true;
+                            in_content = true;
+                        }
+                        QName(b"w:t") => {
+                            in_t = true;
                         }
                         QName(n) => {
-                            if inPr {
-                                control.params.insert(String::from_utf8_lossy(n).to_string(), "".into());
+                            if in_pr {
+                                control
+                                    .params
+                                    .insert(String::from_utf8_lossy(n).to_string(), "".into());
                             }
                         }
                     },
                     Ok(quick_xml::events::Event::Empty(e)) => {
-                        if inPr {
+                        if in_pr {
                             let mut vwal: String = "".into();
                             for rattr in e.attributes() {
                                 if let Ok(attr) = rattr {
-                                if attr.key == QName(b"w:val") {
-                                    vwal = String::from_utf8_lossy(&attr.value).into();
-                                }
+                                    if attr.key == QName(b"w:val") {
+                                        vwal = String::from_utf8_lossy(&attr.value).into();
+                                    }
                                 }
                             }
-                            control.params.insert(String::from_utf8_lossy(e.name().into_inner()).to_string(), vwal);
+                            control.params.insert(
+                                String::from_utf8_lossy(e.name().into_inner()).to_string(),
+                                vwal,
+                            );
+                        }
+                    }
+                    Ok(Event::Text(e)) => {
+                        if in_t && in_content {
+                            control.value.push_str(&e.unescape().unwrap().to_string());
                         }
                     }
                     Ok(quick_xml::events::Event::End(e)) => match e.name() {
                         QName(b"w:sdt") => {
                             control.infer_from_params();
-                            println!("{} {:?}", control.tag, control.ct_type);
+                            println!("{} {:?} {}", control.tag, control.ct_type, control.value);
                             controls.push(control);
                             control = ContentControl::new();
                         }
                         QName(b"w:sdtPr") => {
-                            inPr = false;
+                            in_pr = false;
+                        }
+                        QName(b"") => {
+                            in_t = false;
                         }
                         QName(b"w:sdtContent") => {
-                            inContent = false;
+                            in_content = false;
                         }
                         _ => {}
                     },
