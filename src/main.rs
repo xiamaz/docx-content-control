@@ -4,6 +4,7 @@ use std::io::prelude::*;
 use std::io::BufReader;
 use std::io::Cursor;
 
+use quick_xml::events::BytesText;
 use quick_xml::events::Event;
 use quick_xml::name::QName;
 use quick_xml::Writer;
@@ -249,6 +250,9 @@ fn clear_content_controls(data: &ZipData, controlled: &ParsedDocuments) -> ZipDa
     let mut mapped_data = ZipData::new();
     for (filename, data) in data {
         if let Some(doc) = controlled.get(filename) {
+            for control in &doc.controls {
+                println!("{} {:?} {}", control.tag, control.ct_type, control.value);
+            }
             let events: Vec<Event> = doc
                 .events
                 .iter()
@@ -275,13 +279,64 @@ fn clear_content_controls(data: &ZipData, controlled: &ParsedDocuments) -> ZipDa
     mapped_data
 }
 
+fn get_intersecting_control(index: i64, controls: &Vec<ContentControl>) -> Option<&ContentControl> {
+    for control in controls {
+        if index >= control.content_begin && index < control.content_end {
+            return Some(control);
+        }
+    }
+    return None;
+}
+
+fn map_content_controls(
+    data: &ZipData,
+    controlled: &ParsedDocuments,
+    mappings: &HashMap<&str, &str>,
+) -> ZipData {
+    let mut mapped_data = ZipData::new();
+    for (filename, data) in data {
+        if let Some(doc) = controlled.get(filename) {
+            let mut writer = Writer::new(Cursor::new(Vec::new()));
+            for (i, event) in doc.events.iter().enumerate() {
+                if let Some(control) = get_intersecting_control(i as i64, &doc.controls) {
+                    if (i as i64) == control.content_begin {
+                        let _ = writer.write_event(event);
+                        let mapped = mappings.get(&control.tag.as_str()).unwrap_or(&"");
+                        let _ = writer.create_element("w:r").write_inner_content(
+                                |writer| {
+                            let _ = writer.create_element("w:t").write_text_content(BytesText::new(mapped));
+                            Ok(())
+                                }
+                                );
+                    }
+                } else {
+                    let _ = writer.write_event(event);
+                }
+            }
+            let new_data = String::from_utf8(writer.into_inner().into_inner()).unwrap();
+            mapped_data.insert(filename.into(), new_data);
+        } else {
+            mapped_data.insert(filename.into(), data.into());
+        }
+    }
+    mapped_data
+}
+
 fn main() {
     let fname = std::path::Path::new("tests/data/content_controlled_document.docx");
     let file = fs::File::open(fname).unwrap();
     let reader = BufReader::new(file);
+    let mappings = HashMap::from([
+        ("Title", "Brave New World"),
+        ("Sidematter", "Into a brave new world"),
+        ("WritingDate", "12.12.2012"),
+        ("Author", "Bruce Wayne"),
+        ("MainContent", "This is rich coming from you."),
+    ]);
     if let Ok(data) = list_zip_contents(reader) {
         let controlled_documents = get_content_controls(&data);
-        let new_data = clear_content_controls(&data, &controlled_documents);
+        // let new_data = clear_content_controls(&data, &controlled_documents);
+        let new_data = map_content_controls(&data, &controlled_documents, &mappings);
         let _ = zip_dir(&new_data, "test.docx", zip::CompressionMethod::Deflated);
     }
 }
