@@ -95,6 +95,8 @@ struct ContentControl {
     value: String,
     ct_type: ContentControlType,
     params: HashMap<String, String>,
+    content_begin: i64,
+    content_end: i64,
 }
 
 impl ContentControl {
@@ -104,8 +106,11 @@ impl ContentControl {
             value: "".into(),
             ct_type: ContentControlType::Unsupported,
             params: HashMap::new(),
+            content_begin: -1,
+            content_end: -1,
         }
     }
+
     fn infer_from_params(&mut self) {
         // if no type is set, RichText is default
         self.ct_type = ContentControlType::RichText;
@@ -120,88 +125,154 @@ impl ContentControl {
     }
 }
 
-fn get_content_controls(data: &ZipData) -> Vec<ContentControl> {
-    let mut controls: Vec<ContentControl> = Vec::new();
-    for (_, string) in data {
-        if has_content_control(&string) {
-            let mut reader = Reader::from_str(string);
-            let mut in_pr = false;
-            let mut in_content = false;
-            let mut in_t = false;
-            let mut control = ContentControl::new();
-            loop {
-                let ev = reader.read_event();
-                match &ev {
-                    Err(e) => panic!("Error at position {}: {:?}", reader.buffer_position(), e),
-                    Ok(quick_xml::events::Event::Eof) => break,
-                    Ok(quick_xml::events::Event::Start(e)) => match e.name() {
-                        QName(b"w:sdt") => {
-                            for attr in e.attributes() {
-                                println!("{:?}", attr);
-                            }
-                        }
-                        QName(b"w:sdtPr") => {
-                            in_pr = true;
-                        }
-                        QName(b"w:sdtContent") => {
-                            in_content = true;
-                        }
-                        QName(b"w:t") => {
-                            in_t = true;
-                        }
-                        QName(n) => {
-                            if in_pr {
-                                control
-                                    .params
-                                    .insert(String::from_utf8_lossy(n).to_string(), "".into());
-                            }
-                        }
-                    },
-                    Ok(quick_xml::events::Event::Empty(e)) => {
-                        if in_pr {
-                            let mut vwal: String = "".into();
-                            for rattr in e.attributes() {
-                                if let Ok(attr) = rattr {
-                                    if attr.key == QName(b"w:val") {
-                                        vwal = String::from_utf8_lossy(&attr.value).into();
-                                    }
-                                }
-                            }
-                            control.params.insert(
-                                String::from_utf8_lossy(e.name().into_inner()).to_string(),
-                                vwal,
-                            );
-                        }
-                    }
-                    Ok(Event::Text(e)) => {
-                        if in_t && in_content {
-                            control.value.push_str(&e.unescape().unwrap().to_string());
-                        }
-                    }
-                    Ok(quick_xml::events::Event::End(e)) => match e.name() {
-                        QName(b"w:sdt") => {
-                            control.infer_from_params();
-                            println!("{} {:?} {}", control.tag, control.ct_type, control.value);
-                            controls.push(control);
-                            control = ContentControl::new();
-                        }
-                        QName(b"w:sdtPr") => {
-                            in_pr = false;
-                        }
-                        QName(b"") => {
-                            in_t = false;
-                        }
-                        QName(b"w:sdtContent") => {
-                            in_content = false;
-                        }
-                        _ => {}
-                    },
-                    _ => {}
-                }
-            }
+struct DocumentData<'a> {
+    events: Vec<Event<'a>>,
+    controls: Vec<ContentControl>,
+}
+
+impl<'a> DocumentData<'a> {
+    fn new() -> DocumentData<'a> {
+        DocumentData {
+            events: Vec::new(),
+            controls: Vec::new(),
         }
     }
-    controls
+}
+
+type ParsedDocuments<'a> = HashMap<String, DocumentData<'a>>;
+
+struct DocumentState {
+    states: HashMap<String, i32>,
+    is_eof: bool,
+}
+
+impl DocumentState {
+    fn new() -> DocumentState {
+        DocumentState {
+            states: HashMap::new(),
+            is_eof: false,
+        }
+    }
+
+    fn is_in(&self, key: &str) -> bool {
+        self.states.get(key).unwrap_or(&0) > &0
+    }
+
+    fn consume<'b>(&mut self, event: &'b Event) {
+        match event {
+            Event::Start(e) => {
+                let name = String::from_utf8_lossy(e.name().into_inner()).to_string();
+                let current = self.states.get(&name).unwrap_or(&0);
+                self.states.insert(name, current + 1);
+            }
+            Event::End(e) => {
+                let name = String::from_utf8_lossy(e.name().into_inner()).to_string();
+                let current = self.states.get(&name).unwrap_or(&0);
+                self.states.insert(name, current - 1);
+            }
+            Event::Eof => self.is_eof = true,
+            _ => {}
+        }
+    }
+}
+
+fn get_content_controls(data: &ZipData) -> ParsedDocuments {
+    let mut documents = HashMap::new();
+    for (filename, string) in data {
+        if has_content_control(&string) {
+            let mut reader = Reader::from_str(string);
+            let mut state = DocumentState::new();
+            let mut controls: Vec<ContentControl> = Vec::new();
+            let mut control = ContentControl::new();
+            let mut events: Vec<Event> = Vec::new();
+            while !state.is_eof {
+                let event = reader.read_event();
+                match event {
+                    Err(e) => panic!("Error at position {}: {:?}", reader.buffer_position(), e),
+                    Ok(e) => {
+                        state.consume(&e);
+                        match &e {
+                            Event::Start(v) => {
+                                if state.is_in("w:sdtPr") {
+                                    control.params.insert(
+                                        String::from_utf8_lossy(v.name().into_inner()).to_string(),
+                                        "".into(),
+                                    );
+                                }
+                                if v.name() == QName(b"w:sdtContent") {
+                                    control.content_begin = events.len() as i64;
+                                }
+                            }
+                            Event::End(v) => {
+                                if v.name() == QName(b"w:sdt") {
+                                    control.infer_from_params();
+                                    controls.push(control);
+                                    control = ContentControl::new();
+                                } else if v.name() == QName(b"w:sdtContent") {
+                                    control.content_end = events.len() as i64;
+                                }
+                            }
+                            Event::Empty(v) => {
+                                if state.is_in("w:sdtPr") {
+                                    let mut vwal: String = "".into();
+                                    for rattr in v.attributes() {
+                                        if let Ok(attr) = rattr {
+                                            if attr.key == QName(b"w:val") {
+                                                vwal = String::from_utf8_lossy(&attr.value).into();
+                                            }
+                                        }
+                                    }
+                                    control.params.insert(
+                                        String::from_utf8_lossy(v.name().into_inner()).to_string(),
+                                        vwal,
+                                    );
+                                }
+                            }
+                            Event::Text(v) => {
+                                if state.is_in("w:t") && state.is_in("w:sdtContent") {
+                                    control.value.push_str(&v.unescape().unwrap().to_string());
+                                }
+                            }
+                            _ => {}
+                        }
+                        events.push(e.clone());
+                    }
+                }
+            }
+            documents.insert(filename.into(), DocumentData { events, controls });
+        }
+    }
+    documents
+}
+
+fn clear_content_controls(data: &ZipData, controlled: &ParsedDocuments) -> ZipData {
+    let mut mapped_data = ZipData::new();
+    for (filename, data) in data {
+        if let Some(doc) = controlled.get(filename) {
+            let events: Vec<Event> = doc
+                .events
+                .iter()
+                .enumerate()
+                .filter(|&(i, _)| {
+                    !doc.controls
+                        .iter()
+                        .map(|c| (i as i64) > c.content_begin && (i as i64) < c.content_end)
+                        .reduce(|a, b| a || b)
+                        .unwrap_or(true)
+                })
+                .map(|(_, v)| v.clone())
+                .collect();
+            let mut writer = Writer::new(Cursor::new(Vec::new()));
+            for event in events {
+                let _ = writer.write_event(event);
+            }
+            let new_data = String::from_utf8(writer.into_inner().into_inner()).unwrap();
+            mapped_data.insert(filename.into(), new_data);
+        } else {
+            mapped_data.insert(filename.into(), data.into());
+        }
+    }
+    mapped_data
 }
 
 fn main() {
@@ -209,7 +280,8 @@ fn main() {
     let file = fs::File::open(fname).unwrap();
     let reader = BufReader::new(file);
     if let Ok(data) = list_zip_contents(reader) {
-        get_content_controls(&data);
-        let _ = zip_dir(&data, "test.docx", zip::CompressionMethod::Deflated);
+        let controlled_documents = get_content_controls(&data);
+        let new_data = clear_content_controls(&data, &controlled_documents);
+        let _ = zip_dir(&new_data, "test.docx", zip::CompressionMethod::Deflated);
     }
 }
