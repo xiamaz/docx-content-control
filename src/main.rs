@@ -91,23 +91,25 @@ impl ContentControlType {
     }
 }
 
-struct ContentControl {
+struct ContentControl<'a> {
     tag: String,
     value: String,
     ct_type: ContentControlType,
     params: HashMap<String, String>,
     contains_paragraph: bool,
+    paragraph_params: Vec<Event<'a>>,
     content_begin: i64,
     content_end: i64,
 }
 
-impl ContentControl {
-    fn new() -> ContentControl {
+impl<'a> ContentControl<'a> {
+    fn new() -> ContentControl<'a> {
         ContentControl {
             tag: "".into(),
             value: "".into(),
             ct_type: ContentControlType::Unsupported,
             params: HashMap::new(),
+            paragraph_params: Vec::new(),
             contains_paragraph: false,
             content_begin: -1,
             content_end: -1,
@@ -131,6 +133,9 @@ impl ContentControl {
 fn write_content<'a, W>(control: &'a ContentControl, writer: &'a mut Writer<W>, content: &'a str) -> Result<(), &'a str> where W: std::io::Write {
     if control.contains_paragraph {
             let _ = writer.create_element("w:p").write_inner_content(|writer| {
+                for ev in &control.paragraph_params {
+                    let _ = writer.write_event(ev);
+                }
                 let _ = writer.create_element("w:r").write_inner_content(|writer| {
                     let _ = writer
                         .create_element("w:t")
@@ -150,13 +155,13 @@ fn write_content<'a, W>(control: &'a ContentControl, writer: &'a mut Writer<W>, 
     Ok(())
 }
 
-struct DocumentData<'a> {
+struct DocumentData<'a, 'b> {
     events: Vec<Event<'a>>,
-    controls: Vec<ContentControl>,
+    controls: Vec<ContentControl<'b>>,
 }
 
-impl<'a> DocumentData<'a> {
-    fn new() -> DocumentData<'a> {
+impl<'a, 'b> DocumentData<'a, 'b> {
+    fn new() -> DocumentData<'a, 'b> {
         DocumentData {
             events: Vec::new(),
             controls: Vec::new(),
@@ -164,11 +169,12 @@ impl<'a> DocumentData<'a> {
     }
 }
 
-type ParsedDocuments<'a> = HashMap<String, DocumentData<'a>>;
+type ParsedDocuments<'a, 'b> = HashMap<String, DocumentData<'a, 'b>>;
 
 struct DocumentState {
     states: HashMap<String, i32>,
     is_eof: bool,
+    last_seen_closed: String,
 }
 
 impl DocumentState {
@@ -176,6 +182,7 @@ impl DocumentState {
         DocumentState {
             states: HashMap::new(),
             is_eof: false,
+            last_seen_closed: "".into(),
         }
     }
 
@@ -183,7 +190,15 @@ impl DocumentState {
         self.states.get(key).unwrap_or(&0) > &0
     }
 
+    fn is_at(&self, key: &str) -> bool {
+        self.is_in(key) || key == self.last_seen_closed
+    }
+
     fn consume<'b>(&mut self, event: &'b Event) {
+        // reset last seen closing tag, as we only want that to cover the closing tag
+        if self.last_seen_closed != "" {
+            self.last_seen_closed = "".into();
+        }
         match event {
             Event::Start(e) => {
                 let name = String::from_utf8_lossy(e.name().into_inner()).to_string();
@@ -193,6 +208,7 @@ impl DocumentState {
             Event::End(e) => {
                 let name = String::from_utf8_lossy(e.name().into_inner()).to_string();
                 let current = self.states.get(&name).unwrap_or(&0);
+                self.last_seen_closed = name.clone();
                 self.states.insert(name, current - 1);
             }
             Event::Eof => self.is_eof = true,
@@ -216,6 +232,9 @@ fn get_content_controls(data: &ZipData) -> ParsedDocuments {
                     Err(e) => panic!("Error at position {}: {:?}", reader.buffer_position(), e),
                     Ok(e) => {
                         state.consume(&e);
+                        if state.is_in("w:sdtContent") && state.is_in("w:p") && state.is_at("w:pPr") {
+                            control.paragraph_params.push(e.clone());
+                        }
                         match &e {
                             Event::Start(v) => {
                                 if state.is_in("w:sdtPr") {
@@ -306,7 +325,7 @@ fn clear_content_controls(data: &ZipData, controlled: &ParsedDocuments) -> ZipDa
     mapped_data
 }
 
-fn get_intersecting_control(index: i64, controls: &Vec<ContentControl>) -> Option<&ContentControl> {
+fn get_intersecting_control<'a>(index: i64, controls: &'a Vec<ContentControl<'a>>) -> Option<&'a ContentControl<'a>> {
     for control in controls {
         if index >= control.content_begin && index < control.content_end {
             return Some(control);
