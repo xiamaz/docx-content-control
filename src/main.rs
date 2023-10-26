@@ -96,6 +96,7 @@ struct ContentControl {
     value: String,
     ct_type: ContentControlType,
     params: HashMap<String, String>,
+    contains_paragraph: bool,
     content_begin: i64,
     content_end: i64,
 }
@@ -107,6 +108,7 @@ impl ContentControl {
             value: "".into(),
             ct_type: ContentControlType::Unsupported,
             params: HashMap::new(),
+            contains_paragraph: false,
             content_begin: -1,
             content_end: -1,
         }
@@ -124,6 +126,28 @@ impl ContentControl {
             }
         }
     }
+}
+
+fn write_content<'a, W>(control: &'a ContentControl, writer: &'a mut Writer<W>, content: &'a str) -> Result<(), &'a str> where W: std::io::Write {
+    if control.contains_paragraph {
+            let _ = writer.create_element("w:p").write_inner_content(|writer| {
+                let _ = writer.create_element("w:r").write_inner_content(|writer| {
+                    let _ = writer
+                        .create_element("w:t")
+                        .write_text_content(BytesText::new(content));
+                    Ok(())
+                });
+                Ok(())
+            });
+    } else {
+            let _ = writer.create_element("w:r").write_inner_content(|writer| {
+                let _ = writer
+                    .create_element("w:t")
+                    .write_text_content(BytesText::new(content));
+                Ok(())
+            });
+    }
+    Ok(())
 }
 
 struct DocumentData<'a> {
@@ -202,6 +226,9 @@ fn get_content_controls(data: &ZipData) -> ParsedDocuments {
                                 }
                                 if v.name() == QName(b"w:sdtContent") {
                                     control.content_begin = events.len() as i64;
+                                }
+                                if state.is_in("w:sdtContent") && v.name() == QName(b"w:p") {
+                                    control.contains_paragraph = true;
                                 }
                             }
                             Event::End(v) => {
@@ -302,12 +329,13 @@ fn map_content_controls(
                     if (i as i64) == control.content_begin {
                         let _ = writer.write_event(event);
                         let mapped = mappings.get(&control.tag.as_str()).unwrap_or(&"");
-                        let _ = writer.create_element("w:r").write_inner_content(
-                                |writer| {
-                            let _ = writer.create_element("w:t").write_text_content(BytesText::new(mapped));
-                            Ok(())
-                                }
-                                );
+                        write_content(&control, &mut writer, *mapped);
+                        // let _ = writer.create_element("w:r").write_inner_content(|writer| {
+                        //     let _ = writer
+                        //         .create_element("w:t")
+                        //         .write_text_content(BytesText::new(mapped));
+                        //     Ok(())
+                        // });
                     }
                 } else {
                     let _ = writer.write_event(event);
