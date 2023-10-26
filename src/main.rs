@@ -130,27 +130,34 @@ impl<'a> ContentControl<'a> {
     }
 }
 
-fn write_content<'a, W>(control: &'a ContentControl, writer: &'a mut Writer<W>, content: &'a str) -> Result<(), &'a str> where W: std::io::Write {
+fn write_content<'a, W>(
+    control: &'a ContentControl,
+    writer: &'a mut Writer<W>,
+    content: &'a str,
+) -> Result<(), &'a str>
+where
+    W: std::io::Write,
+{
     if control.contains_paragraph {
-            let _ = writer.create_element("w:p").write_inner_content(|writer| {
-                for ev in &control.paragraph_params {
-                    let _ = writer.write_event(ev);
-                }
-                let _ = writer.create_element("w:r").write_inner_content(|writer| {
-                    let _ = writer
-                        .create_element("w:t")
-                        .write_text_content(BytesText::new(content));
-                    Ok(())
-                });
-                Ok(())
-            });
-    } else {
+        let _ = writer.create_element("w:p").write_inner_content(|writer| {
+            for ev in &control.paragraph_params {
+                let _ = writer.write_event(ev);
+            }
             let _ = writer.create_element("w:r").write_inner_content(|writer| {
                 let _ = writer
                     .create_element("w:t")
                     .write_text_content(BytesText::new(content));
                 Ok(())
             });
+            Ok(())
+        });
+    } else {
+        let _ = writer.create_element("w:r").write_inner_content(|writer| {
+            let _ = writer
+                .create_element("w:t")
+                .write_text_content(BytesText::new(content));
+            Ok(())
+        });
     }
     Ok(())
 }
@@ -232,7 +239,8 @@ fn get_content_controls(data: &ZipData) -> ParsedDocuments {
                     Err(e) => panic!("Error at position {}: {:?}", reader.buffer_position(), e),
                     Ok(e) => {
                         state.consume(&e);
-                        if state.is_in("w:sdtContent") && state.is_in("w:p") && state.is_at("w:pPr") {
+                        if state.is_in("w:sdtContent") && state.is_in("w:p") && state.is_at("w:pPr")
+                        {
                             control.paragraph_params.push(e.clone());
                         }
                         match &e {
@@ -325,7 +333,10 @@ fn clear_content_controls(data: &ZipData, controlled: &ParsedDocuments) -> ZipDa
     mapped_data
 }
 
-fn get_intersecting_control<'a>(index: i64, controls: &'a Vec<ContentControl<'a>>) -> Option<&'a ContentControl<'a>> {
+fn get_intersecting_control<'a>(
+    index: i64,
+    controls: &'a Vec<ContentControl<'a>>,
+) -> Option<&'a ContentControl<'a>> {
     for control in controls {
         if index >= control.content_begin && index < control.content_end {
             return Some(control);
