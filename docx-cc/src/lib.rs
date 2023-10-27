@@ -30,11 +30,9 @@ pub fn list_zip_contents(reader: impl Read + Seek) -> zip::result::ZipResult<Zip
 
 pub fn zip_dir(
     data: &HashMap<String, String>,
-    path_str: &str,
+    file: &mut fs::File,
     method: zip::CompressionMethod,
 ) -> zip::result::ZipResult<()> {
-    let path = std::path::Path::new(path_str);
-    let file = fs::File::create(path).unwrap();
     let mut writer = zip::ZipWriter::new(file);
     let options = FileOptions::default()
         .compression_method(method)
@@ -370,12 +368,20 @@ mod tests {
     use std::io::BufReader;
     use std::fs;
     use super::*;
+    use tempfile::tempfile;
+
+    fn load_path(path: &str) -> ZipData {
+        let fname = std::path::Path::new(&path);
+        let file = fs::File::open(fname).unwrap();
+        let reader = BufReader::new(file);
+        list_zip_contents(reader).unwrap()
+    }
 
     #[test]
     fn full_operation() {
-        let fname = std::path::Path::new("tests/data/content_controlled_document.docx");
-        let file = fs::File::open(fname).unwrap();
-        let reader = BufReader::new(file);
+        let input_data = load_path("tests/data/content_controlled_document.docx");
+        let expected_data = load_path("tests/data/content_controlled_document_expected.docx");
+
         let mappings = HashMap::from([
             ("Title", "Brave New World"),
             ("Sidematter", "Into a brave new world"),
@@ -383,11 +389,16 @@ mod tests {
             ("Author", "Bruce Wayne"),
             ("MainContent", "This is rich coming from you."),
         ]);
-        if let Ok(data) = list_zip_contents(reader) {
-            let controlled_documents = get_content_controls(&data);
-            // let new_data = clear_content_controls(&data, &controlled_documents);
-            let new_data = map_content_controls(&data, &controlled_documents, &mappings);
-            let _ = zip_dir(&new_data, "test.docx", zip::CompressionMethod::Deflated);
+        let controlled_documents = get_content_controls(&input_data);
+        let mapped_data = map_content_controls(&input_data, &controlled_documents, &mappings);
+
+        let mut outfile = tempfile().unwrap();
+        let _ = zip_dir(&mapped_data, &mut outfile, zip::CompressionMethod::Deflated);
+        let nreader = BufReader::new(outfile);
+        let result_data = list_zip_contents(nreader).unwrap();
+
+        for (e_k, e_v) in expected_data {
+            assert_eq!(e_v, result_data[&e_k]);
         }
     }
 }
