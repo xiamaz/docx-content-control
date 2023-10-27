@@ -1,10 +1,5 @@
-[package]
-name = "docx-content-control"
-version = "0.1.0"
-edition = "2021"
+[workspace]
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
-[dependencies]
-quick-xml = "0.30.0"
-zip = "0.6.6"
+members = [
+  "docx-cc"
+]

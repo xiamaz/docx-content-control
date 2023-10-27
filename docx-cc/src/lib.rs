@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
 use std::io::prelude::*;
-use std::io::BufReader;
 use std::io::Cursor;
 
 use quick_xml::events::BytesText;
@@ -12,9 +11,9 @@ use zip::write::FileOptions;
 
 use quick_xml::reader::Reader;
 
-type ZipData = HashMap<String, String>;
+pub type ZipData = HashMap<String, String>;
 
-fn list_zip_contents(reader: impl Read + Seek) -> zip::result::ZipResult<ZipData> {
+pub fn list_zip_contents(reader: impl Read + Seek) -> zip::result::ZipResult<ZipData> {
     let mut zip = zip::ZipArchive::new(reader)?;
 
     let mut data: ZipData = HashMap::new();
@@ -29,7 +28,7 @@ fn list_zip_contents(reader: impl Read + Seek) -> zip::result::ZipResult<ZipData
     Ok(data)
 }
 
-fn zip_dir(
+pub fn zip_dir(
     data: &HashMap<String, String>,
     path_str: &str,
     method: zip::CompressionMethod,
@@ -162,23 +161,14 @@ where
     Ok(())
 }
 
-struct DocumentData<'a, 'b> {
+pub struct DocumentData<'a, 'b> {
     events: Vec<Event<'a>>,
     controls: Vec<ContentControl<'b>>,
 }
 
-impl<'a, 'b> DocumentData<'a, 'b> {
-    fn new() -> DocumentData<'a, 'b> {
-        DocumentData {
-            events: Vec::new(),
-            controls: Vec::new(),
-        }
-    }
-}
-
 type ParsedDocuments<'a, 'b> = HashMap<String, DocumentData<'a, 'b>>;
 
-struct DocumentState {
+pub struct DocumentState {
     states: HashMap<String, i32>,
     is_eof: bool,
     last_seen_closed: String,
@@ -224,7 +214,7 @@ impl DocumentState {
     }
 }
 
-fn get_content_controls(data: &ZipData) -> ParsedDocuments {
+pub fn get_content_controls(data: &ZipData) -> ParsedDocuments {
     let mut documents = HashMap::new();
     for (filename, string) in data {
         if has_content_control(&string) {
@@ -345,7 +335,7 @@ fn get_intersecting_control<'a>(
     return None;
 }
 
-fn map_content_controls(
+pub fn map_content_controls(
     data: &ZipData,
     controlled: &ParsedDocuments,
     mappings: &HashMap<&str, &str>,
@@ -359,13 +349,7 @@ fn map_content_controls(
                     if (i as i64) == control.content_begin {
                         let _ = writer.write_event(event);
                         let mapped = mappings.get(&control.tag.as_str()).unwrap_or(&"");
-                        write_content(&control, &mut writer, *mapped);
-                        // let _ = writer.create_element("w:r").write_inner_content(|writer| {
-                        //     let _ = writer
-                        //         .create_element("w:t")
-                        //         .write_text_content(BytesText::new(mapped));
-                        //     Ok(())
-                        // });
+                        let _ = write_content(&control, &mut writer, *mapped);
                     }
                 } else {
                     let _ = writer.write_event(event);
@@ -380,21 +364,30 @@ fn map_content_controls(
     mapped_data
 }
 
-fn main() {
-    let fname = std::path::Path::new("tests/data/content_controlled_document.docx");
-    let file = fs::File::open(fname).unwrap();
-    let reader = BufReader::new(file);
-    let mappings = HashMap::from([
-        ("Title", "Brave New World"),
-        ("Sidematter", "Into a brave new world"),
-        ("WritingDate", "12.12.2012"),
-        ("Author", "Bruce Wayne"),
-        ("MainContent", "This is rich coming from you."),
-    ]);
-    if let Ok(data) = list_zip_contents(reader) {
-        let controlled_documents = get_content_controls(&data);
-        // let new_data = clear_content_controls(&data, &controlled_documents);
-        let new_data = map_content_controls(&data, &controlled_documents, &mappings);
-        let _ = zip_dir(&new_data, "test.docx", zip::CompressionMethod::Deflated);
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::io::BufReader;
+    use std::fs;
+    use super::*;
+
+    #[test]
+    fn full_operation() {
+        let fname = std::path::Path::new("tests/data/content_controlled_document.docx");
+        let file = fs::File::open(fname).unwrap();
+        let reader = BufReader::new(file);
+        let mappings = HashMap::from([
+            ("Title", "Brave New World"),
+            ("Sidematter", "Into a brave new world"),
+            ("WritingDate", "12.12.2012"),
+            ("Author", "Bruce Wayne"),
+            ("MainContent", "This is rich coming from you."),
+        ]);
+        if let Ok(data) = list_zip_contents(reader) {
+            let controlled_documents = get_content_controls(&data);
+            // let new_data = clear_content_controls(&data, &controlled_documents);
+            let new_data = map_content_controls(&data, &controlled_documents, &mappings);
+            let _ = zip_dir(&new_data, "test.docx", zip::CompressionMethod::Deflated);
+        }
     }
 }
