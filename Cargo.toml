@@ -1,5 +1,6 @@
 [workspace]
 
 members = [
-  "docx-cc"
+  "docx-cc",
+  "baserow-cc",
 ]
