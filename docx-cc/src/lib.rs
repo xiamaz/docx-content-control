@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
 use std::fs;
 use std::io::prelude::*;
 use std::io::Cursor;
@@ -12,6 +14,19 @@ use zip::write::FileOptions;
 use quick_xml::reader::Reader;
 
 pub type ZipData = HashMap<String, String>;
+
+#[derive(Debug)]
+struct ParserError {
+    data: String,
+}
+
+impl fmt::Display for ParserError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Parser error, probably malformed xml tags")
+    }
+}
+
+impl Error for ParserError {}
 
 pub fn list_zip_contents(reader: impl Read + Seek) -> zip::result::ZipResult<ZipData> {
     let mut zip = zip::ZipArchive::new(reader)?;
@@ -28,14 +43,13 @@ pub fn list_zip_contents(reader: impl Read + Seek) -> zip::result::ZipResult<Zip
     Ok(data)
 }
 
-pub fn zip_dir(
+pub fn zip_dir<W: Write + Seek>(
     data: &HashMap<String, String>,
-    file: &mut fs::File,
-    method: zip::CompressionMethod,
+    file: &mut W,
 ) -> zip::result::ZipResult<()> {
     let mut writer = zip::ZipWriter::new(file);
     let options = FileOptions::default()
-        .compression_method(method)
+        .compression_method(zip::CompressionMethod::Deflated)
         .unix_permissions(0o755);
 
     for (key, value) in data {
@@ -95,6 +109,7 @@ struct ContentControl<'a> {
     params: HashMap<String, String>,
     contains_paragraph: bool,
     paragraph_params: Vec<Event<'a>>,
+    run_params: Vec<Event<'a>>,
     content_begin: i64,
     content_end: i64,
 }
@@ -107,6 +122,7 @@ impl<'a> ContentControl<'a> {
             ct_type: ContentControlType::Unsupported,
             params: HashMap::new(),
             paragraph_params: Vec::new(),
+            run_params: Vec::new(),
             contains_paragraph: false,
             content_begin: -1,
             content_end: -1,
@@ -141,6 +157,9 @@ where
                 let _ = writer.write_event(ev);
             }
             let _ = writer.create_element("w:r").write_inner_content(|writer| {
+                for ev in &control.run_params {
+                    let _ = writer.write_event(ev);
+                }
                 let _ = writer
                     .create_element("w:t")
                     .write_text_content(BytesText::new(content));
@@ -150,6 +169,9 @@ where
         });
     } else {
         let _ = writer.create_element("w:r").write_inner_content(|writer| {
+            for ev in &control.run_params {
+                let _ = writer.write_event(ev);
+            }
             let _ = writer
                 .create_element("w:t")
                 .write_text_content(BytesText::new(content));
@@ -230,6 +252,10 @@ pub fn get_content_controls(data: &ZipData) -> ParsedDocuments {
                         if state.is_in("w:sdtContent") && state.is_in("w:p") && state.is_at("w:pPr")
                         {
                             control.paragraph_params.push(e.clone());
+                        }
+                        if state.is_in("w:sdtContent") && state.is_in("w:r") && state.is_at("w:rPr")
+                        {
+                            control.run_params.push(e.clone());
                         }
                         match &e {
                             Event::Start(v) => {
@@ -362,12 +388,38 @@ pub fn map_content_controls(
     mapped_data
 }
 
+fn parse_mappings(mappings: &HashMap<&str, &str>) -> Result<i8, ParserError> {
+    for (key, value) in mappings {
+        let mut reader = Reader::from_str(value);
+        let mut txt = Vec::new();
+        loop {
+            match reader.read_event() {
+                Err(e) => panic!("Error at position {}: {:?}", reader.buffer_position(), e),
+                Ok(Event::Eof) => break,
+                Ok(Event::Start(e)) => match e.name().as_ref() {
+                    b"tag1" => println!(
+                        "attributes values: {:?}",
+                        e.attributes().map(|a| a.unwrap().value).collect::<Vec<_>>()
+                    ),
+                    _ => (),
+                },
+                Ok(Event::Text(e)) => txt.push(e.unescape().unwrap().into_owned()),
+                _ => ()
+            }
+        }
+        println!("{} {:?}", key, txt)
+    }
+    Err(ParserError {
+        data: "Nothing has been implemented".into(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-    use std::io::BufReader;
-    use std::fs;
     use super::*;
+    use std::collections::HashMap;
+    use std::fs;
+    use std::io::{BufReader, BufWriter};
     use tempfile::tempfile;
 
     fn load_path(path: &str) -> ZipData {
@@ -393,7 +445,26 @@ mod tests {
         let mapped_data = map_content_controls(&input_data, &controlled_documents, &mappings);
 
         let mut outfile = tempfile().unwrap();
-        let _ = zip_dir(&mapped_data, &mut outfile, zip::CompressionMethod::Deflated);
+        let _ = zip_dir(&mapped_data, &mut outfile);
+        let nreader = BufReader::new(outfile);
+        let result_data = list_zip_contents(nreader).unwrap();
+
+        for (e_k, e_v) in expected_data {
+            assert_eq!(e_v, result_data[&e_k]);
+        }
+    }
+
+    #[test]
+    fn run_with_params() {
+        let input_data = load_path("tests/data/run_with_params.docx");
+        let expected_data = load_path("tests/data/run_with_params_expected.docx");
+        let mappings = HashMap::from([
+            ("RunField", "Something new"),
+        ]);
+        let controlled_documents = get_content_controls(&input_data);
+        let mapped_data = map_content_controls(&input_data, &controlled_documents, &mappings);
+        let mut outfile = tempfile().unwrap();
+        let _ = zip_dir(&mapped_data, &mut outfile);
         let nreader = BufReader::new(outfile);
         let result_data = list_zip_contents(nreader).unwrap();
 
