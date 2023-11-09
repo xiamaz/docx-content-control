@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
-use std::fs;
+use std::str;
 use std::io::prelude::*;
 use std::io::Cursor;
 
@@ -13,7 +13,7 @@ use zip::write::FileOptions;
 
 use quick_xml::reader::Reader;
 
-pub type ZipData = HashMap<String, String>;
+pub type ZipData = HashMap<String, Vec<u8>>;
 
 #[derive(Debug)]
 struct ParserError {
@@ -34,17 +34,17 @@ pub fn list_zip_contents(reader: impl Read + Seek) -> zip::result::ZipResult<Zip
     let mut data: ZipData = HashMap::new();
     for i in 0..zip.len() {
         let mut file = zip.by_index(i)?;
-        let mut data_str = String::new();
-        let _ = file.read_to_string(&mut data_str);
+        let mut buf = Vec::new();
+        let _ = file.read_to_end(&mut buf);
         // std::io::copy(&mut file, &mut std::io::stdout());
-        data.insert(file.name().into(), data_str);
+        data.insert(file.name().into(), buf);
     }
 
     Ok(data)
 }
 
 pub fn zip_dir<W: Write + Seek>(
-    data: &HashMap<String, String>,
+    data: &HashMap<String, Vec<u8>>,
     file: &mut W,
 ) -> zip::result::ZipResult<()> {
     let mut writer = zip::ZipWriter::new(file);
@@ -54,16 +54,20 @@ pub fn zip_dir<W: Write + Seek>(
 
     for (key, value) in data {
         writer.start_file(key, options)?;
-        let _ = writer.write_all(value.as_bytes());
+        let _ = writer.write_all(value);
     }
     Ok(())
+}
+
+fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack.windows(needle.len()).position(|window| window == needle)
 }
 
 /**
  * Check if the string contains an sdt tag (Ruby Inline-Level Structured Document Tag)
  */
-fn has_content_control(text: &String) -> bool {
-    return text.contains("<w:sdt>");
+fn has_content_control(text: &Vec<u8>) -> bool {
+    find_subsequence(text, b"<w:sdt>").is_some()
 }
 
 #[derive(Debug)]
@@ -238,7 +242,8 @@ pub fn get_content_controls(data: &ZipData) -> ParsedDocuments {
     let mut documents = HashMap::new();
     for (filename, string) in data {
         if has_content_control(&string) {
-            let mut reader = Reader::from_str(string);
+            let enc_str = str::from_utf8(&string).expect("should be utf-8 encoded string");
+            let mut reader = Reader::from_str(enc_str);
             let mut state = DocumentState::new();
             let mut controls: Vec<ContentControl> = Vec::new();
             let mut control = ContentControl::new();
@@ -338,10 +343,9 @@ fn clear_content_controls(data: &ZipData, controlled: &ParsedDocuments) -> ZipDa
             for event in events {
                 let _ = writer.write_event(event);
             }
-            let new_data = String::from_utf8(writer.into_inner().into_inner()).unwrap();
-            mapped_data.insert(filename.into(), new_data);
+            mapped_data.insert(filename.into(), writer.into_inner().into_inner());
         } else {
-            mapped_data.insert(filename.into(), data.into());
+            mapped_data.insert(filename.into(), data.clone());
         }
     }
     mapped_data
@@ -379,10 +383,9 @@ pub fn map_content_controls(
                     let _ = writer.write_event(event);
                 }
             }
-            let new_data = String::from_utf8(writer.into_inner().into_inner()).unwrap();
-            mapped_data.insert(filename.into(), new_data);
+            mapped_data.insert(filename.into(), writer.into_inner().into_inner());
         } else {
-            mapped_data.insert(filename.into(), data.into());
+            mapped_data.insert(filename.into(), data.clone());
         }
     }
     mapped_data
@@ -471,5 +474,19 @@ mod tests {
         for (e_k, e_v) in expected_data {
             assert_eq!(e_v, result_data[&e_k]);
         }
+    }
+
+    #[test]
+    fn preserve_images() {
+        let input_data = load_path("tests/data/run_with_params_imgs.docx");
+        let mappings = HashMap::from([
+            ("RunField", "Something new"),
+        ]);
+        let controlled_documents = get_content_controls(&input_data);
+        let mapped_data = map_content_controls(&input_data, &controlled_documents, &mappings);
+
+        let file = fs::File::create("test.docx").unwrap();
+        let mut writer = BufWriter::new(file);
+        let _ = zip_dir(&mapped_data, &mut writer);
     }
 }
