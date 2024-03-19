@@ -2,5 +2,7 @@
 
 members = [
   "docx-cc",
+  "py-docx-cc",
   "baserow-cc",
+  "docx-cli"
 ]

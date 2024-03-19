@@ -1,0 +1,13 @@
+[package]
+name = "py-docx-cc"
+version = "0.2.2"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+name = "py_docx_cc"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = "0.19.0"
+docx-cc = { path = "../docx-cc" }

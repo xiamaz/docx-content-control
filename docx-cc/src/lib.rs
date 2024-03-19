@@ -71,7 +71,7 @@ fn has_content_control(text: &Vec<u8>) -> bool {
 }
 
 #[derive(Debug)]
-enum ContentControlType {
+pub enum ContentControlType {
     Unsupported,
     RichText,
     Text,
@@ -94,7 +94,7 @@ struct FontFormatting {
 }
 
 impl ContentControlType {
-    fn parse_string(value: &String) -> Option<ContentControlType> {
+    pub fn parse_string(value: &String) -> Option<ContentControlType> {
         match value.as_str() {
             "w:richText" => Some(ContentControlType::RichText),
             "w:text" => Some(ContentControlType::Text),
@@ -104,10 +104,21 @@ impl ContentControlType {
             _ => None,
         }
     }
+
+    pub fn to_string(&self) -> String {
+        match &self {
+            ContentControlType::RichText => "w:richText".to_string(),
+            ContentControlType::Text => "w:text".to_string(),
+            ContentControlType::ComboBox => "w:comboBox".to_string(),
+            ContentControlType::DropdownList => "w:dropDownList".to_string(),
+            ContentControlType::Date => "w:date".to_string(),
+            ContentControlType::Unsupported => "unsupported".to_string(),
+        }
+    }
 }
 
-struct ContentControl<'a> {
-    tag: String,
+pub struct ContentControl<'a> {
+    pub tag: String,
     value: String,
     ct_type: ContentControlType,
     params: HashMap<String, String>,
@@ -131,6 +142,10 @@ impl<'a> ContentControl<'a> {
             content_begin: -1,
             content_end: -1,
         }
+    }
+
+    pub fn get_control_type(&self) -> &ContentControlType {
+        &self.ct_type
     }
 
     fn infer_from_params(&mut self) {
@@ -187,7 +202,7 @@ where
 
 pub struct DocumentData<'a, 'b> {
     events: Vec<Event<'a>>,
-    controls: Vec<ContentControl<'b>>,
+    pub controls: Vec<ContentControl<'b>>,
 }
 
 type ParsedDocuments<'a, 'b> = HashMap<String, DocumentData<'a, 'b>>;
