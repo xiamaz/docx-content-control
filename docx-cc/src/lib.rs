@@ -65,7 +65,7 @@ fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 /**
  * Check if the string contains an sdt tag (Ruby Inline-Level Structured Document Tag)
  */
-fn has_content_control(text: &Vec<u8>) -> bool {
+fn has_content_control(text: &[u8]) -> bool {
     find_subsequence(text, b"<w:sdt>").is_some()
 }
 
@@ -80,8 +80,8 @@ pub enum ContentControlType {
 }
 
 impl ContentControlType {
-    pub fn parse_string(value: &String) -> Option<ContentControlType> {
-        match value.as_str() {
+    pub fn parse_string(value: &str) -> Option<ContentControlType> {
+        match value {
             "w:richText" => Some(ContentControlType::RichText),
             "w:text" => Some(ContentControlType::Text),
             "w:comboBox" => Some(ContentControlType::ComboBox),
@@ -90,16 +90,18 @@ impl ContentControlType {
             _ => None,
         }
     }
+}
 
-    pub fn to_string(&self) -> String {
-        match &self {
+impl fmt::Display for ContentControlType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", match &self {
             ContentControlType::RichText => "w:richText".to_string(),
             ContentControlType::Text => "w:text".to_string(),
             ContentControlType::ComboBox => "w:comboBox".to_string(),
             ContentControlType::DropdownList => "w:dropDownList".to_string(),
             ContentControlType::Date => "w:date".to_string(),
             ContentControlType::Unsupported => "unsupported".to_string(),
-        }
+        })
     }
 }
 
@@ -141,7 +143,7 @@ impl<'a> ContentControl<'a> {
         for (k, v) in &self.params {
             if k == "w:tag" {
                 self.tag = v.to_string();
-            } else if let Some(t) = ContentControlType::parse_string(&k) {
+            } else if let Some(t) = ContentControlType::parse_string(k) {
                 self.ct_type = t;
             }
         }
@@ -216,9 +218,9 @@ impl DocumentState {
         self.is_in(key) || key == self.last_seen_closed
     }
 
-    fn consume<'b>(&mut self, event: &'b Event) {
+    fn consume(&mut self, event: &Event) {
         // reset last seen closing tag, as we only want that to cover the closing tag
-        if self.last_seen_closed != "" {
+        if !self.last_seen_closed.is_empty() {
             self.last_seen_closed = "".into();
         }
         match event {
@@ -242,8 +244,8 @@ impl DocumentState {
 pub fn get_content_controls(data: &ZipData) -> ParsedDocuments {
     let mut documents = HashMap::new();
     for (filename, string) in data {
-        if has_content_control(&string) {
-            let enc_str = str::from_utf8(&string).expect("should be utf-8 encoded string");
+        if has_content_control(string) {
+            let enc_str = str::from_utf8(string).expect("should be utf-8 encoded string");
             let mut reader = Reader::from_str(enc_str);
             let mut state = DocumentState::new();
             let mut controls: Vec<ContentControl> = Vec::new();
@@ -290,11 +292,9 @@ pub fn get_content_controls(data: &ZipData) -> ParsedDocuments {
                             Event::Empty(v) => {
                                 if state.is_in("w:sdtPr") {
                                     let mut vwal: String = "".into();
-                                    for rattr in v.attributes() {
-                                        if let Ok(attr) = rattr {
-                                            if attr.key == QName(b"w:val") {
-                                                vwal = String::from_utf8_lossy(&attr.value).into();
-                                            }
+                                    for attr in v.attributes().flatten() {
+                                        if attr.key == QName(b"w:val") {
+                                            vwal = String::from_utf8_lossy(&attr.value).into();
                                         }
                                     }
                                     control.params.insert(
@@ -305,7 +305,7 @@ pub fn get_content_controls(data: &ZipData) -> ParsedDocuments {
                             }
                             Event::Text(v) => {
                                 if state.is_in("w:t") && state.is_in("w:sdtContent") {
-                                    control.value.push_str(&v.unescape().unwrap().to_string());
+                                    control.value.push_str(v.unescape().unwrap().as_ref());
                                 }
                             }
                             _ => {}
@@ -328,7 +328,7 @@ pub fn remove_content_controls(data: &ZipData) -> ZipData {
     for (filename, doc_string) in data {
         if has_content_control(doc_string) {
             let mut writer = Writer::new(Cursor::new(Vec::new()));
-            let doc_string_enc = str::from_utf8(&doc_string).expect("should be utf-8 encoded string");
+            let doc_string_enc = str::from_utf8(doc_string).expect("should be utf-8 encoded string");
             let mut reader = Reader::from_str(doc_string_enc);
             let mut state = DocumentState::new();
             while !state.is_eof {
@@ -367,14 +367,9 @@ pub fn remove_content_controls(data: &ZipData) -> ZipData {
 
 fn get_intersecting_control<'a>(
     index: i64,
-    controls: &'a Vec<ContentControl<'a>>,
+    controls: &'a[ContentControl<'a>],
 ) -> Option<&'a ContentControl<'a>> {
-    for control in controls {
-        if index >= control.content_begin && index < control.content_end {
-            return Some(control);
-        }
-    }
-    return None;
+    controls.iter().find(|&control| index >= control.content_begin && index < control.content_end)
 }
 
 pub fn map_content_controls(
@@ -391,7 +386,7 @@ pub fn map_content_controls(
                     if (i as i64) == control.content_begin {
                         let _ = writer.write_event(event);
                         let mapped = mappings.get(&control.tag.as_str()).unwrap_or(&"");
-                        let _ = write_content(&control, &mut writer, *mapped);
+                        let _ = write_content(control, &mut writer, mapped);
                     }
                 } else {
                     let _ = writer.write_event(event);
@@ -475,6 +470,20 @@ mod tests {
         let mapped_data = map_content_controls(&input_data, &controlled_documents, &mappings);
 
         let file = fs::File::create("test.docx").unwrap();
+        let mut writer = BufWriter::new(file);
+        let _ = zip_dir(&mapped_data, &mut writer);
+    }
+
+    #[test]
+    fn complex_replacement() {
+        let input_data = load_path("tests/data/run_with_params_imgs.docx");
+        let mappings = HashMap::from([
+            ("RunField", "<w:t>Something</w:t><w:cr/><w:t>new</w:t>"),
+        ]);
+        let controlled_documents = get_content_controls(&input_data);
+        let mapped_data = map_content_controls(&input_data, &controlled_documents, &mappings);
+
+        let file = fs::File::create("test2.docx").unwrap();
         let mut writer = BufWriter::new(file);
         let _ = zip_dir(&mapped_data, &mut writer);
     }
