@@ -1,11 +1,10 @@
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
-use std::str;
 use std::io::prelude::*;
 use std::io::Cursor;
+use std::str;
 
-use quick_xml::events::BytesText;
 use quick_xml::events::Event;
 use quick_xml::name::QName;
 use quick_xml::Writer;
@@ -16,8 +15,7 @@ use quick_xml::reader::Reader;
 pub type ZipData = HashMap<String, Vec<u8>>;
 
 #[derive(Debug)]
-struct ParserError {
-}
+struct ParserError {}
 
 impl fmt::Display for ParserError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -59,7 +57,9 @@ pub fn zip_dir<W: Write + Seek>(
 }
 
 fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len()).position(|window| window == needle)
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
 
 /**
@@ -94,14 +94,18 @@ impl ContentControlType {
 
 impl fmt::Display for ContentControlType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", match &self {
-            ContentControlType::RichText => "w:richText".to_string(),
-            ContentControlType::Text => "w:text".to_string(),
-            ContentControlType::ComboBox => "w:comboBox".to_string(),
-            ContentControlType::DropdownList => "w:dropDownList".to_string(),
-            ContentControlType::Date => "w:date".to_string(),
-            ContentControlType::Unsupported => "unsupported".to_string(),
-        })
+        write!(
+            f,
+            "{}",
+            match &self {
+                ContentControlType::RichText => "w:richText".to_string(),
+                ContentControlType::Text => "w:text".to_string(),
+                ContentControlType::ComboBox => "w:comboBox".to_string(),
+                ContentControlType::DropdownList => "w:dropDownList".to_string(),
+                ContentControlType::Date => "w:date".to_string(),
+                ContentControlType::Unsupported => "unsupported".to_string(),
+            }
+        )
     }
 }
 
@@ -150,6 +154,23 @@ impl<'a> ContentControl<'a> {
     }
 }
 
+fn write_parsed_content<W>(writer: &mut Writer<W>, content: &str) -> Result<(), quick_xml::Error>
+where
+    W: std::io::Write,
+{
+    let mut content_reader = Reader::from_str(content);
+    loop {
+        let event = content_reader
+            .read_event()
+            .expect("should be a well formatted xml");
+        let _ = match event {
+            Event::Eof => break,
+            _ => writer.write_event(event),
+        };
+    }
+    Ok(())
+}
+
 fn write_content<'a, W>(
     control: &'a ContentControl,
     writer: &'a mut Writer<W>,
@@ -167,9 +188,12 @@ where
                 for ev in &control.run_params {
                     let _ = writer.write_event(ev);
                 }
+                // let _ = writer
+                //     .create_element("w:t")
+                //     .write_text_content(BytesText::new(content));
                 let _ = writer
                     .create_element("w:t")
-                    .write_text_content(BytesText::new(content));
+                    .write_inner_content(|writer| write_parsed_content(writer, content));
                 Ok(())
             });
             Ok(())
@@ -179,9 +203,12 @@ where
             for ev in &control.run_params {
                 let _ = writer.write_event(ev);
             }
+            // let _ = writer
+            //     .create_element("w:t")
+            //     .write_text_content(BytesText::new(content));
             let _ = writer
                 .create_element("w:t")
-                .write_text_content(BytesText::new(content));
+                .write_inner_content(|writer| write_parsed_content(writer, content));
             Ok(())
         });
     }
@@ -328,7 +355,8 @@ pub fn remove_content_controls(data: &ZipData) -> ZipData {
     for (filename, doc_string) in data {
         if has_content_control(doc_string) {
             let mut writer = Writer::new(Cursor::new(Vec::new()));
-            let doc_string_enc = str::from_utf8(doc_string).expect("should be utf-8 encoded string");
+            let doc_string_enc =
+                str::from_utf8(doc_string).expect("should be utf-8 encoded string");
             let mut reader = Reader::from_str(doc_string_enc);
             let mut state = DocumentState::new();
             while !state.is_eof {
@@ -339,12 +367,18 @@ pub fn remove_content_controls(data: &ZipData) -> ZipData {
                         state.consume(&e);
                         match &e {
                             Event::Start(v) => {
-                                if v.name() != QName(b"w:sdtContent") && v.name() != QName(b"w:sdt") && !state.is_at("w:sdtPr") {
+                                if v.name() != QName(b"w:sdtContent")
+                                    && v.name() != QName(b"w:sdt")
+                                    && !state.is_at("w:sdtPr")
+                                {
                                     let _ = writer.write_event(e);
                                 }
                             }
                             Event::End(v) => {
-                                if v.name() != QName(b"w:sdtContent") && v.name() != QName(b"w:sdt") && !state.is_at("w:sdtPr") {
+                                if v.name() != QName(b"w:sdtContent")
+                                    && v.name() != QName(b"w:sdt")
+                                    && !state.is_at("w:sdtPr")
+                                {
                                     let _ = writer.write_event(e);
                                 }
                             }
@@ -367,9 +401,11 @@ pub fn remove_content_controls(data: &ZipData) -> ZipData {
 
 fn get_intersecting_control<'a>(
     index: i64,
-    controls: &'a[ContentControl<'a>],
+    controls: &'a [ContentControl<'a>],
 ) -> Option<&'a ContentControl<'a>> {
-    controls.iter().find(|&control| index >= control.content_begin && index < control.content_end)
+    controls
+        .iter()
+        .find(|&control| index >= control.content_begin && index < control.content_end)
 }
 
 pub fn map_content_controls(
@@ -399,7 +435,6 @@ pub fn map_content_controls(
     }
     mapped_data
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -445,9 +480,7 @@ mod tests {
     fn run_with_params() {
         let input_data = load_path("tests/data/run_with_params.docx");
         let expected_data = load_path("tests/data/run_with_params_expected.docx");
-        let mappings = HashMap::from([
-            ("RunField", "Something new"),
-        ]);
+        let mappings = HashMap::from([("RunField", "Something new")]);
         let controlled_documents = get_content_controls(&input_data);
         let mapped_data = map_content_controls(&input_data, &controlled_documents, &mappings);
         let mut outfile = tempfile().unwrap();
@@ -463,9 +496,7 @@ mod tests {
     #[test]
     fn preserve_images() {
         let input_data = load_path("tests/data/run_with_params_imgs.docx");
-        let mappings = HashMap::from([
-            ("RunField", "Something new"),
-        ]);
+        let mappings = HashMap::from([("RunField", "Something new")]);
         let controlled_documents = get_content_controls(&input_data);
         let mapped_data = map_content_controls(&input_data, &controlled_documents, &mappings);
 
