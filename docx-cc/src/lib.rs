@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::error::Error;
 use std::fmt;
 use std::io::prelude::*;
@@ -109,6 +110,27 @@ impl fmt::Display for ContentControlType {
     }
 }
 
+fn get_tag_types(content: &str) -> HashSet<String> {
+    let mut content_reader = Reader::from_str(content);
+    let mut tag_names = HashSet::new();
+    loop {
+        let event = content_reader
+            .read_event()
+            .expect("should be a well formatted xml");
+        let _ = match event {
+            Event::Eof => break,
+            Event::Start(e) => {
+                tag_names.insert(String::from_utf8_lossy(e.name().into_inner()).to_string());
+            }
+            Event::Empty(e) => {
+                tag_names.insert(String::from_utf8_lossy(e.name().into_inner()).to_string());
+            }
+            _ => {}
+        };
+    }
+    tag_names
+}
+
 pub struct ContentControl<'a> {
     pub tag: String,
     value: String,
@@ -171,6 +193,44 @@ where
     Ok(())
 }
 
+fn write_wrap_tags<W>(
+    writer: &mut Writer<W>,
+    control: &ContentControl,
+    content: &str,
+    tags: &[&str],
+) -> Result<(), quick_xml::Error>
+where
+    W: std::io::Write,
+{
+    let content_tags = get_tag_types(content);
+    if !tags.is_empty() {
+        let tag = tags[0];
+        if content_tags.contains(tag) {
+            write_parsed_content(writer, content)?
+        } else {
+            let _ = writer.create_element(tag).write_inner_content(|writer| {
+                match tag {
+                    "w:p" => {
+                        for ev in &control.paragraph_params {
+                            let _ = writer.write_event(ev);
+                        }
+                    }
+                    "w:r" => {
+                        for ev in &control.run_params {
+                            let _ = writer.write_event(ev);
+                        }
+                    }
+                    _ => {}
+                }
+                write_wrap_tags(writer, control, content, &tags[1..])
+            });
+        }
+    } else {
+        write_parsed_content(writer, content)?
+    }
+    Ok(())
+}
+
 fn write_content<'a, W>(
     control: &'a ContentControl,
     writer: &'a mut Writer<W>,
@@ -179,38 +239,12 @@ fn write_content<'a, W>(
 where
     W: std::io::Write,
 {
-    if control.contains_paragraph {
-        let _ = writer.create_element("w:p").write_inner_content(|writer| {
-            for ev in &control.paragraph_params {
-                let _ = writer.write_event(ev);
-            }
-            let _ = writer.create_element("w:r").write_inner_content(|writer| {
-                for ev in &control.run_params {
-                    let _ = writer.write_event(ev);
-                }
-                // let _ = writer
-                //     .create_element("w:t")
-                //     .write_text_content(BytesText::new(content));
-                let _ = writer
-                    .create_element("w:t")
-                    .write_inner_content(|writer| write_parsed_content(writer, content));
-                Ok(())
-            });
-            Ok(())
-        });
+    if let ContentControlType::RichText = control.ct_type {
+        let _ = write_wrap_tags(writer, control, content, &["w:p", "w:r", "w:t"]);
+    } else if control.contains_paragraph {
+        let _ = write_wrap_tags(writer, control, content, &["w:p", "w:r", "w:t"]);
     } else {
-        let _ = writer.create_element("w:r").write_inner_content(|writer| {
-            for ev in &control.run_params {
-                let _ = writer.write_event(ev);
-            }
-            // let _ = writer
-            //     .create_element("w:t")
-            //     .write_text_content(BytesText::new(content));
-            let _ = writer
-                .create_element("w:t")
-                .write_inner_content(|writer| write_parsed_content(writer, content));
-            Ok(())
-        });
+        let _ = write_wrap_tags(writer, control, content, &["w:r", "w:t"]);
     }
     Ok(())
 }
@@ -508,13 +542,68 @@ mod tests {
     #[test]
     fn complex_replacement() {
         let input_data = load_path("tests/data/run_with_params_imgs.docx");
-        let mappings = HashMap::from([
-            ("RunField", "<w:t>Something</w:t><w:cr/><w:t>new</w:t>"),
-        ]);
+        let mappings = HashMap::from([("RunField", "<w:t>Something</w:t><w:cr/><w:t>new</w:t>")]);
         let controlled_documents = get_content_controls(&input_data);
         let mapped_data = map_content_controls(&input_data, &controlled_documents, &mappings);
 
         let file = fs::File::create("test2.docx").unwrap();
+        let mut writer = BufWriter::new(file);
+        let _ = zip_dir(&mapped_data, &mut writer);
+    }
+
+    #[test]
+    fn table_replacement() {
+        let input_data = load_path("tests/data/content_controlled_document.docx");
+        let mappings = HashMap::from([(
+            "MainContent",
+            "<w:tbl>
+<w:tblPr>
+<w:tblStyle w:val=\"TableGrid\"/>
+<w:tblW w:w=\"5000\" w:type=\"pct\"/>
+</w:tblPr>
+<w:tblGrid>
+<w:gridCol w:w=\"2880\"/>
+<w:gridCol w:w=\"2880\"/>
+<w:gridCol w:w=\"2880\"/>
+</w:tblGrid>
+<w:tr>
+<w:tc>
+<w:tcPr>
+<w:tcW w:w=\"2880\" w:type=\"dxa\"/>
+</w:tcPr>
+<w:p>
+<w:r>
+<w:t>AAA</w:t>
+</w:r>
+</w:p>
+</w:tc>
+<w:tc>
+<w:tcPr>
+<w:tcW w:w=\"2880\" w:type=\"dxa\"/>
+</w:tcPr>
+<w:p>
+<w:r>
+<w:t>BBB</w:t>
+</w:r>
+</w:p>
+</w:tc>
+<w:tc>
+<w:tcPr>
+<w:tcW w:w=\"2880\" w:type=\"dxa\"/>
+</w:tcPr>
+<w:p>
+<w:r>
+<w:t>CCC</w:t>
+</w:r>
+</w:p>
+</w:tc>
+</w:tr>
+</w:tbl>",
+        )]);
+        let controlled_documents = get_content_controls(&input_data);
+        let mapped_data = map_content_controls(&input_data, &controlled_documents, &mappings);
+
+        let file = fs::File::create("test3.docx").unwrap();
         let mut writer = BufWriter::new(file);
         let _ = zip_dir(&mapped_data, &mut writer);
     }
