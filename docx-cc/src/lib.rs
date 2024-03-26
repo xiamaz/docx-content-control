@@ -17,7 +17,6 @@ pub type ZipData = HashMap<String, Vec<u8>>;
 
 #[derive(Debug)]
 struct ParserError {
-    data: String,
 }
 
 impl fmt::Display for ParserError {
@@ -78,19 +77,6 @@ pub enum ContentControlType {
     ComboBox,
     DropdownList,
     Date,
-}
-
-enum FontStyleSpecifier {
-    Normal,
-    Bold,
-    Italic,
-    Superscript,
-    Subscript,
-}
-
-struct FontFormatting {
-    size: i32,
-    style: FontStyleSpecifier,
 }
 
 impl ContentControlType {
@@ -334,36 +320,49 @@ pub fn get_content_controls(data: &ZipData) -> ParsedDocuments {
     documents
 }
 
-fn clear_content_controls(data: &ZipData, controlled: &ParsedDocuments) -> ZipData {
-    let mut mapped_data = ZipData::new();
-    for (filename, data) in data {
-        if let Some(doc) = controlled.get(filename) {
-            for control in &doc.controls {
-                println!("{} {:?} {}", control.tag, control.ct_type, control.value);
-            }
-            let events: Vec<Event> = doc
-                .events
-                .iter()
-                .enumerate()
-                .filter(|&(i, _)| {
-                    !doc.controls
-                        .iter()
-                        .map(|c| (i as i64) > c.content_begin && (i as i64) < c.content_end)
-                        .reduce(|a, b| a || b)
-                        .unwrap_or(true)
-                })
-                .map(|(_, v)| v.clone())
-                .collect();
+/**
+ * Remove all content controls while retaining content.
+ */
+pub fn remove_content_controls(data: &ZipData) -> ZipData {
+    let mut cleared_data = ZipData::new();
+    for (filename, doc_string) in data {
+        if has_content_control(doc_string) {
             let mut writer = Writer::new(Cursor::new(Vec::new()));
-            for event in events {
-                let _ = writer.write_event(event);
+            let doc_string_enc = str::from_utf8(&doc_string).expect("should be utf-8 encoded string");
+            let mut reader = Reader::from_str(doc_string_enc);
+            let mut state = DocumentState::new();
+            while !state.is_eof {
+                let event = reader.read_event();
+                match event {
+                    Err(e) => panic!("Error at position {}: {:?}", reader.buffer_position(), e),
+                    Ok(e) => {
+                        state.consume(&e);
+                        match &e {
+                            Event::Start(v) => {
+                                if v.name() != QName(b"w:sdtContent") && v.name() != QName(b"w:sdt") && !state.is_at("w:sdtPr") {
+                                    let _ = writer.write_event(e);
+                                }
+                            }
+                            Event::End(v) => {
+                                if v.name() != QName(b"w:sdtContent") && v.name() != QName(b"w:sdt") && !state.is_at("w:sdtPr") {
+                                    let _ = writer.write_event(e);
+                                }
+                            }
+                            _ => {
+                                if !state.is_at("w:sdtPr") {
+                                    let _ = writer.write_event(e);
+                                }
+                            }
+                        }
+                    }
+                }
             }
-            mapped_data.insert(filename.into(), writer.into_inner().into_inner());
+            cleared_data.insert(filename.into(), writer.into_inner().into_inner());
         } else {
-            mapped_data.insert(filename.into(), data.clone());
+            cleared_data.insert(filename.into(), doc_string.clone());
         }
     }
-    mapped_data
+    cleared_data
 }
 
 fn get_intersecting_control<'a>(
@@ -406,31 +405,6 @@ pub fn map_content_controls(
     mapped_data
 }
 
-fn parse_mappings(mappings: &HashMap<&str, &str>) -> Result<i8, ParserError> {
-    for (key, value) in mappings {
-        let mut reader = Reader::from_str(value);
-        let mut txt = Vec::new();
-        loop {
-            match reader.read_event() {
-                Err(e) => panic!("Error at position {}: {:?}", reader.buffer_position(), e),
-                Ok(Event::Eof) => break,
-                Ok(Event::Start(e)) => match e.name().as_ref() {
-                    b"tag1" => println!(
-                        "attributes values: {:?}",
-                        e.attributes().map(|a| a.unwrap().value).collect::<Vec<_>>()
-                    ),
-                    _ => (),
-                },
-                Ok(Event::Text(e)) => txt.push(e.unescape().unwrap().into_owned()),
-                _ => ()
-            }
-        }
-        println!("{} {:?}", key, txt)
-    }
-    Err(ParserError {
-        data: "Nothing has been implemented".into(),
-    })
-}
 
 #[cfg(test)]
 mod tests {
