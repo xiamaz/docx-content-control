@@ -19,7 +19,7 @@ fn map_content_controls<'a>(template_data: Vec<u8>, mappings: HashMap<String, St
 }
 
 #[pyfunction]
-fn remove_content_controls(template_data: Vec<u8>) -> Vec<u8> {
+fn remove_content_controls<'a>(template_data: Vec<u8>) -> Cow<'a, [u8]> {
     let cursor = io::Cursor::new(template_data);
     let reader = io::BufReader::new(cursor);
     let data = docx_cc::list_zip_contents(reader).unwrap();
@@ -28,7 +28,7 @@ fn remove_content_controls(template_data: Vec<u8>) -> Vec<u8> {
     let mut outc = io::Cursor::new(&mut buffer);
     let _ = docx_cc::zip_dir(&result, &mut outc);
 
-    buffer
+    Cow::Owned(buffer)
 }
 
 #[pyfunction]
