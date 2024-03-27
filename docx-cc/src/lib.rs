@@ -117,7 +117,7 @@ fn get_tag_types(content: &str) -> HashSet<String> {
         let event = content_reader
             .read_event()
             .expect("should be a well formatted xml");
-        let _ = match event {
+        match event {
             Event::Eof => break,
             Event::Start(e) => {
                 tag_names.insert(String::from_utf8_lossy(e.name().into_inner()).to_string());
@@ -137,7 +137,9 @@ pub struct ContentControl<'a> {
     ct_type: ContentControlType,
     params: HashMap<String, String>,
     contains_paragraph: bool,
+    paragraph_position: i32,
     paragraph_params: Vec<Event<'a>>,
+    run_position: i32,
     run_params: Vec<Event<'a>>,
     content_begin: i64,
     content_end: i64,
@@ -151,7 +153,9 @@ impl<'a> ContentControl<'a> {
             ct_type: ContentControlType::Unsupported,
             params: HashMap::new(),
             paragraph_params: Vec::new(),
+            paragraph_position: -1,
             run_params: Vec::new(),
+            run_position: -1,
             contains_paragraph: false,
             content_begin: -1,
             content_end: -1,
@@ -239,9 +243,7 @@ fn write_content<'a, W>(
 where
     W: std::io::Write,
 {
-    if let ContentControlType::RichText = control.ct_type {
-        let _ = write_wrap_tags(writer, control, content, &["w:p", "w:r", "w:t"]);
-    } else if control.contains_paragraph {
+    if control.contains_paragraph {
         let _ = write_wrap_tags(writer, control, content, &["w:p", "w:r", "w:t"]);
     } else {
         let _ = write_wrap_tags(writer, control, content, &["w:r", "w:t"]);
@@ -258,16 +260,20 @@ type ParsedDocuments<'a, 'b> = HashMap<String, DocumentData<'a, 'b>>;
 
 pub struct DocumentState {
     states: HashMap<String, i32>,
+    positions: HashMap<String, i32>,
     is_eof: bool,
     last_seen_closed: String,
+    counter: i32,
 }
 
 impl DocumentState {
     fn new() -> DocumentState {
         DocumentState {
             states: HashMap::new(),
+            positions: HashMap::new(),
             is_eof: false,
             last_seen_closed: "".into(),
+            counter: 0,
         }
     }
 
@@ -279,6 +285,10 @@ impl DocumentState {
         self.is_in(key) || key == self.last_seen_closed
     }
 
+    fn last_seen_position(&self, key: &str) -> &i32 {
+        self.positions.get(key).unwrap()
+    }
+
     fn consume(&mut self, event: &Event) {
         // reset last seen closing tag, as we only want that to cover the closing tag
         if !self.last_seen_closed.is_empty() {
@@ -288,7 +298,8 @@ impl DocumentState {
             Event::Start(e) => {
                 let name = String::from_utf8_lossy(e.name().into_inner()).to_string();
                 let current = self.states.get(&name).unwrap_or(&0);
-                self.states.insert(name, current + 1);
+                self.states.insert(name.clone(), current + 1);
+                self.positions.insert(name.clone(), self.counter);
             }
             Event::End(e) => {
                 let name = String::from_utf8_lossy(e.name().into_inner()).to_string();
@@ -299,6 +310,7 @@ impl DocumentState {
             Event::Eof => self.is_eof = true,
             _ => {}
         }
+        self.counter += 1;
     }
 }
 
@@ -320,11 +332,21 @@ pub fn get_content_controls(data: &ZipData) -> ParsedDocuments {
                         state.consume(&e);
                         if state.is_in("w:sdtContent") && state.is_in("w:p") && state.is_at("w:pPr")
                         {
-                            control.paragraph_params.push(e.clone());
+                            if control.paragraph_position < 0 {
+                                control.paragraph_position = *state.last_seen_position("w:p");
+                            }
+                            if *state.last_seen_position("w:p") == control.paragraph_position {
+                                control.paragraph_params.push(e.clone());
+                            }
                         }
                         if state.is_in("w:sdtContent") && state.is_in("w:r") && state.is_at("w:rPr")
                         {
-                            control.run_params.push(e.clone());
+                            if control.run_position < 0 {
+                                control.run_position = *state.last_seen_position("w:r");
+                            }
+                            if *state.last_seen_position("w:r") == control.run_position {
+                                control.run_params.push(e.clone());
+                            }
                         }
                         match &e {
                             Event::Start(v) => {
