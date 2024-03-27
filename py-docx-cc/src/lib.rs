@@ -1,24 +1,25 @@
 use std::collections::HashMap;
 use std::io;
-use pyo3::types::PyBytes;
+use std::borrow::Cow;
 use pyo3::prelude::*;
 
 #[pyfunction]
-fn map_content_controls<'a>(py: Python<'a>, template_data: Vec<u8>, mappings: HashMap<&str, &str>) -> &'a PyBytes {
+fn map_content_controls<'a>(template_data: Vec<u8>, mappings: HashMap<String, String>) -> Cow<'a, [u8]> {
     let cursor = io::Cursor::new(template_data);
     let reader = io::BufReader::new(cursor);
     let data = docx_cc::list_zip_contents(reader).unwrap();
     let controlled_docs = docx_cc::get_content_controls(&data);
-    let mapped_data = docx_cc::map_content_controls(&data, &controlled_docs, &mappings);
+    let mappings_str = mappings.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect::<HashMap<_, _>>();
+    let mapped_data = docx_cc::map_content_controls(&data, &controlled_docs, &mappings_str);
     let mut buffer: Vec<u8> = Vec::new();
     let mut outc = io::Cursor::new(&mut buffer);
     let _ = docx_cc::zip_dir(&mapped_data, &mut outc);
 
-    PyBytes::new(py, &buffer)
+    Cow::Owned(buffer)
 }
 
 #[pyfunction]
-fn remove_content_controls(py: Python, template_data: Vec<u8>) -> &PyBytes {
+fn remove_content_controls(template_data: Vec<u8>) -> Vec<u8> {
     let cursor = io::Cursor::new(template_data);
     let reader = io::BufReader::new(cursor);
     let data = docx_cc::list_zip_contents(reader).unwrap();
@@ -27,7 +28,7 @@ fn remove_content_controls(py: Python, template_data: Vec<u8>) -> &PyBytes {
     let mut outc = io::Cursor::new(&mut buffer);
     let _ = docx_cc::zip_dir(&result, &mut outc);
 
-    PyBytes::new(py, &buffer)
+    buffer
 }
 
 #[pyfunction]
@@ -49,7 +50,8 @@ fn get_content_controls(template_data: Vec<u8>) -> PyResult<HashMap<String, Vec<
 
 /// A Python module implemented in Rust.
 #[pymodule]
-fn py_docx_cc(_py: Python, m: &PyModule) -> PyResult<()> {
+#[pyo3(name = "py_docx_cc")]
+fn py_docx_cc(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(remove_content_controls, m)?)?;
     m.add_function(wrap_pyfunction!(map_content_controls, m)?)?;
     m.add_function(wrap_pyfunction!(get_content_controls, m)?)?;
