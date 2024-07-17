@@ -1,10 +1,12 @@
 [package]
 name = "docx-cc"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 
 [dependencies]
+pretty_assertions = "1.4.0"
 quick-xml = "0.30.0"
+serde_json = "1.0.120"
 zip = "0.6.6"
 
 [dev-dependencies]
