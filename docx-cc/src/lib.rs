@@ -13,6 +13,10 @@ use zip::write::FileOptions;
 
 use quick_xml::reader::Reader;
 
+use serde::Serialize;
+
+static MISSING_STR: &str = "MISSING";
+
 pub type ZipData = HashMap<String, Vec<u8>>;
 pub type Mapping = HashMap<String, String>;
 pub type RepeatMapping = HashMap<String, Vec<Mapping>>;
@@ -71,7 +75,7 @@ fn has_content_control(text: &[u8]) -> bool {
     find_subsequence(text, b"<w:sdt>").is_some()
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Serialize)]
 pub enum ContentControlType {
     Unsupported,
     RichText,
@@ -243,7 +247,7 @@ pub struct DocumentData<'a> {
 
 type ParsedDocuments<'a> = HashMap<String, DocumentData<'a>>;
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct ContentControlPosition {
     r#type: ContentControlType,
     tag: String,
@@ -301,6 +305,14 @@ impl ContentControlPosition {
 
     fn has_run_params(&self) -> bool {
         self.run_params_start >= 0 && self.run_params_end >= 0
+    }
+
+    pub fn get_tag(&self) -> &str {
+        &self.tag
+    }
+
+    pub fn get_type(&self) -> &ContentControlType {
+        &self.r#type
     }
 }
 
@@ -551,7 +563,7 @@ pub fn remove_content_controls(data: &ZipData) -> ZipData {
     cleared_data
 }
 
-fn get_contained_control<'a>(
+pub fn get_contained_control<'a>(
     controls: &'a [ContentControlPosition],
     control: &'a ContentControlPosition,
 ) -> impl Iterator<Item = &'a ContentControlPosition> + 'a {
@@ -578,7 +590,8 @@ pub fn map_content_controls(
                         let _ = writer.write_event(event);
                         match control.r#type {
                             ContentControlType::RepeatingSection => {
-                                let new_values = repeat_mappings.get(control.tag.as_str()).unwrap();
+                                let default_values = Vec::new();
+                                let new_values = repeat_mappings.get(control.tag.as_str()).unwrap_or(&default_values);
                                 for new_value in new_values.iter() {
                                     if let Some(section_item) = get_contained_control(
                                         &doc.control_positions,
@@ -595,10 +608,9 @@ pub fn map_content_controls(
                                             ) {
                                                 if ctrl_item.content_begin == i_item {
                                                     let _ = writer.write_event(ev_item);
-                                                    let default_value = "".to_string();
                                                     let new_value = new_value
-                                                        .get(&ctrl_item.tag)
-                                                        .unwrap_or(&default_value);
+                                                        .get(&ctrl_item.tag).map(String::as_str)
+                                                        .unwrap_or(MISSING_STR);
                                                     let _ = write_content(
                                                         ctrl_item,
                                                         &mut writer,
@@ -614,9 +626,8 @@ pub fn map_content_controls(
                                 }
                             }
                             _ => {
-                                let default_value = "".to_string();
                                 let new_value =
-                                    mappings.get(&control.tag).unwrap_or(&default_value);
+                                    mappings.get(&control.tag).map(String::as_str).unwrap_or(MISSING_STR);
                                 let _ = write_content(control, &mut writer, new_value, &doc.events);
                             }
                         }
